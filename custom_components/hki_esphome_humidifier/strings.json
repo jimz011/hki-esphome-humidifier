@@ -3,36 +3,33 @@
     "step": {
       "user": {
         "title": "HKI ESPHome Humidifier Converter",
-        "description": "Step 1 of 3 — Link your ESPHome climate entity and configure basic settings.",
+        "description": "Step 1 of 3 — Select the ESPHome climate entity that represents your dehumidifier. The humidity range, available modes and supported HVAC modes will all be read automatically from the entity.",
         "data": {
           "climate_entity": "ESPHome climate entity",
-          "name": "Friendly name",
-          "on_hvac_mode": "HVAC mode used when turning on",
-          "min_humidity": "Minimum target humidity (%)",
-          "max_humidity": "Maximum target humidity (%)"
+          "name": "Friendly name"
         },
         "data_description": {
           "climate_entity": "The climate entity created by your ESPHome midea_dehum (or similar) component.",
-          "on_hvac_mode": "The HVAC mode that will be activated on the climate entity when you turn the dehumidifier on. For midea_dehum this is usually 'dry'.",
-          "min_humidity": "Lowest humidity setpoint the slider will allow.",
-          "max_humidity": "Highest humidity setpoint the slider will allow."
+          "name": "Name shown in the Home Assistant UI."
         }
       },
       "modes": {
-        "title": "Operating Modes",
-        "description": "Step 2 of 3 — Select which preset modes to expose. These are read from the climate entity '{climate_entity}'. Deselect any modes your device does not support.",
+        "title": "HVAC Mode & Operating Modes",
+        "description": "Step 2 of 3 — These values have been read automatically from '{climate_entity}'. Deselect any modes your specific device does not support.",
         "data": {
+          "on_hvac_mode": "HVAC mode used when turning on",
           "modes": "Supported operating modes"
         },
         "data_description": {
-          "modes": "Only modes selected here will appear in the humidifier mode picker. Leave all deselected to disable mode support entirely."
+          "on_hvac_mode": "The mode that will be activated on the climate entity when you turn the dehumidifier on. For midea_dehum this is usually 'dry'.",
+          "modes": "Only the selected modes will appear in the humidifier mode picker. Deselect any that your device does not respond to."
         }
       },
       "extras": {
         "title": "Optional Companion Entities",
-        "description": "Step 3 of 3 — Link the additional entities created by ESPHome for this device. All fields are optional — only fill in the ones that exist for your device.",
+        "description": "Step 3 of 3 — Link any additional entities that ESPHome created for this device. All fields are optional — leave blank anything your device does not support.",
         "data": {
-          "current_humidity_entity": "Current humidity sensor",
+          "current_humidity_entity": "Current humidity sensor (override)",
           "tank_level_entity": "Tank water level sensor",
           "pm25_entity": "PM2.5 sensor",
           "error_entity": "Error code sensor",
@@ -45,7 +42,7 @@
           "beep_entity": "Beep on command switch"
         },
         "data_description": {
-          "current_humidity_entity": "When set, this sensor is used for current humidity instead of the climate entity's current_temperature attribute.",
+          "current_humidity_entity": "Only needed if you want to use a separate humidity sensor instead of the value from the climate entity.",
           "tank_level_entity": "Reports the current tank water level (if your device supports it).",
           "pm25_entity": "PM2.5 air quality sensor (if your device supports it).",
           "error_entity": "Error code sensor for diagnostics.",
@@ -59,43 +56,33 @@
         }
       }
     },
-    "error": {
-      "humidity_range_invalid": "Minimum humidity must be less than maximum humidity."
-    },
     "abort": {
-      "already_configured": "This climate entity is already configured."
+      "already_configured": "This climate entity is already configured as a humidifier."
     }
   },
   "options": {
     "step": {
       "core": {
         "title": "Core Settings",
-        "description": "Update the basic settings for this dehumidifier.",
+        "description": "Update the name for this dehumidifier. The climate entity cannot be changed — remove and re-add the integration to switch entities.",
         "data": {
           "climate_entity": "ESPHome climate entity",
-          "name": "Friendly name",
-          "on_hvac_mode": "HVAC mode used when turning on",
-          "min_humidity": "Minimum target humidity (%)",
-          "max_humidity": "Maximum target humidity (%)"
-        },
-        "data_description": {
-          "on_hvac_mode": "The HVAC mode that will be activated on the climate entity when you turn the dehumidifier on.",
-          "min_humidity": "Lowest humidity setpoint the slider will allow.",
-          "max_humidity": "Highest humidity setpoint the slider will allow."
+          "name": "Friendly name"
         }
       },
       "modes": {
-        "title": "Operating Modes",
-        "description": "Select which preset modes to expose for '{climate_entity}'.",
+        "title": "HVAC Mode & Operating Modes",
+        "description": "Read from '{climate_entity}'. Deselect any modes your device does not respond to.",
         "data": {
+          "on_hvac_mode": "HVAC mode used when turning on",
           "modes": "Supported operating modes"
         }
       },
       "extras": {
         "title": "Optional Companion Entities",
-        "description": "Update the optional companion entity links for this device.",
+        "description": "Update the optional companion entity links. Leave blank anything your device does not support.",
         "data": {
-          "current_humidity_entity": "Current humidity sensor",
+          "current_humidity_entity": "Current humidity sensor (override)",
           "tank_level_entity": "Tank water level sensor",
           "pm25_entity": "PM2.5 sensor",
           "error_entity": "Error code sensor",
@@ -108,9 +95,6 @@
           "beep_entity": "Beep on command switch"
         }
       }
-    },
-    "error": {
-      "humidity_range_invalid": "Minimum humidity must be less than maximum humidity."
     }
   }
 }

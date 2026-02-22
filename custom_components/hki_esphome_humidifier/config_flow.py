@@ -1,11 +1,13 @@
 """Config flow for HKI ESPHome Humidifier Converter.
 
-Step 1 — Core:   climate entity, name, hvac on-mode, humidity range
-Step 2 — Modes:  which preset modes to expose (populated from the climate entity)
-Step 3 — Extras: all optional companion entities (sensors, binary sensors, switches)
+Step 1 — Core:   climate entity + name. Everything else (min/max humidity,
+                 hvac_modes, preset_modes) is read directly from the live
+                 climate entity — no manual entry required.
+Step 2 — Modes:  which preset modes to expose (pre-ticked from the entity).
+Step 3 — Extras: all optional companion entities (sensors, binary sensors,
+                 switches). Every field is truly optional.
 
-The same three steps are also available as an Options flow so users can
-reconfigure a device after the initial setup.
+The same three steps are available as an Options flow for reconfiguration.
 """
 
 from __future__ import annotations
@@ -19,17 +21,6 @@ from homeassistant import config_entries
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import callback
 from homeassistant.helpers import selector
-from homeassistant.helpers.selector import (
-    EntitySelector,
-    EntitySelectorConfig,
-    NumberSelector,
-    NumberSelectorConfig,
-    NumberSelectorMode,
-    SelectSelector,
-    SelectSelectorConfig,
-    SelectSelectorMode,
-    TextSelector,
-)
 
 from .const import (
     CONF_BEEP_ENTITY,
@@ -58,183 +49,140 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
-def _get_climate_preset_modes(hass, climate_entity_id: str) -> list[str]:
-    """Return the preset_modes list from a live climate entity, if available."""
+def _climate_attr(hass, climate_entity_id: str, attr: str, fallback=None):
+    """Read a single attribute from the live climate entity."""
     if not climate_entity_id:
-        return []
+        return fallback
     state = hass.states.get(climate_entity_id)
     if state is None or state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE):
-        return []
-    return state.attributes.get("preset_modes") or []
+        return fallback
+    return state.attributes.get(attr, fallback)
 
 
-def _entity_selector(domain: str) -> EntitySelector:
-    return EntitySelector(EntitySelectorConfig(domain=domain))
+def _get_hvac_modes(hass, climate_entity_id: str) -> list[str]:
+    """Return on-capable hvac_modes (everything except 'off')."""
+    modes = _climate_attr(hass, climate_entity_id, "hvac_modes", [])
+    return [m for m in modes if m != "off"]
 
 
-def _optional_entity_selector(domain: str) -> EntitySelector:
-    return EntitySelector(EntitySelectorConfig(domain=domain, multiple=False))
+def _get_preset_modes(hass, climate_entity_id: str) -> list[str]:
+    return _climate_attr(hass, climate_entity_id, "preset_modes") or []
+
+
+def _entity_selector(domain: str) -> selector.EntitySelector:
+    return selector.EntitySelector(
+        selector.EntitySelectorConfig(domain=domain)
+    )
+
+
+def _clean_data(data: dict) -> dict:
+    """Strip None and empty-string values — they mean 'not configured'."""
+    return {k: v for k, v in data.items() if v is not None and v != "" and v != []}
+
+
+def _parse_modes_text(raw: str) -> list[str]:
+    return [m.strip() for m in raw.split(",") if m.strip()]
 
 
 # ─── Step schemas ─────────────────────────────────────────────────────────────
 
 def _step_core_schema(defaults: dict) -> vol.Schema:
+    """Step 1: just the climate entity and a friendly name."""
     return vol.Schema(
         {
             vol.Required(
                 CONF_CLIMATE_ENTITY,
-                default=defaults.get(CONF_CLIMATE_ENTITY, ""),
+                default=defaults.get(CONF_CLIMATE_ENTITY, vol.UNDEFINED),
             ): _entity_selector("climate"),
             vol.Optional(
                 CONF_NAME,
                 default=defaults.get(CONF_NAME, DEFAULT_NAME),
-            ): TextSelector(),
-            vol.Optional(
+            ): selector.TextSelector(),
+        }
+    )
+
+
+def _step_modes_schema(defaults: dict, preset_modes: list[str], hvac_modes: list[str]) -> vol.Schema:
+    """Step 2: on-hvac-mode dropdown (auto-populated) + mode multi-select."""
+    fields: dict = {}
+
+    # on_hvac_mode — populated from live hvac_modes
+    if hvac_modes:
+        fields[vol.Optional(
+            CONF_ON_HVAC_MODE,
+            default=defaults.get(
                 CONF_ON_HVAC_MODE,
-                default=defaults.get(CONF_ON_HVAC_MODE, DEFAULT_ON_HVAC_MODE),
-            ): SelectSelector(
-                SelectSelectorConfig(
-                    options=["dry", "fan_only", "cool", "heat", "auto", "heat_cool"],
-                    mode=SelectSelectorMode.DROPDOWN,
-                    translation_key="on_hvac_mode",
-                )
+                hvac_modes[0] if hvac_modes else DEFAULT_ON_HVAC_MODE,
             ),
-            vol.Optional(
-                CONF_MIN_HUMIDITY,
-                default=defaults.get(CONF_MIN_HUMIDITY, DEFAULT_MIN_HUMIDITY),
-            ): NumberSelector(
-                NumberSelectorConfig(min=0, max=100, step=1, mode=NumberSelectorMode.BOX)
-            ),
-            vol.Optional(
-                CONF_MAX_HUMIDITY,
-                default=defaults.get(CONF_MAX_HUMIDITY, DEFAULT_MAX_HUMIDITY),
-            ): NumberSelector(
-                NumberSelectorConfig(min=0, max=100, step=1, mode=NumberSelectorMode.BOX)
-            ),
-        }
-    )
-
-
-def _step_modes_schema(defaults: dict, available_modes: list[str]) -> vol.Schema:
-    """Build the modes schema. Uses preset_modes from the climate entity when available."""
-    if available_modes:
-        return vol.Schema(
-            {
-                vol.Optional(
-                    CONF_MODES,
-                    default=defaults.get(CONF_MODES, available_modes),
-                ): SelectSelector(
-                    SelectSelectorConfig(
-                        options=available_modes,
-                        multiple=True,
-                        mode=SelectSelectorMode.LIST,
-                    )
-                ),
-            }
+        )] = selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=hvac_modes,
+                mode=selector.SelectSelectorMode.DROPDOWN,
+            )
         )
-    # Fall back to a free-text field when the climate entity isn't live yet
-    return vol.Schema(
-        {
-            vol.Optional(
-                CONF_MODES,
-                default=", ".join(defaults.get(CONF_MODES, [])),
-            ): TextSelector(),
-        }
-    )
+    else:
+        # Fallback free-text when entity is not yet live
+        fields[vol.Optional(
+            CONF_ON_HVAC_MODE,
+            default=defaults.get(CONF_ON_HVAC_MODE, DEFAULT_ON_HVAC_MODE),
+        )] = selector.TextSelector()
+
+    # preset modes — multi-select, pre-ticked from the entity
+    if preset_modes:
+        fields[vol.Optional(
+            CONF_MODES,
+            default=defaults.get(CONF_MODES, preset_modes),
+        )] = selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=preset_modes,
+                multiple=True,
+                mode=selector.SelectSelectorMode.LIST,
+            )
+        )
+    # If no preset_modes exist on the entity we skip this field entirely
+
+    return vol.Schema(fields)
 
 
 def _step_extras_schema(defaults: dict) -> vol.Schema:
-    """Schema for all optional companion entity pickers."""
+    """Step 3: all optional companion entities.
 
-    def _opt(key, domain):
-        return vol.Optional(key, default=defaults.get(key, ""))
+    Every field uses vol.Optional with no default so HA renders them as
+    genuinely optional — the entity picker shows empty and the user can
+    leave any field blank.
+    """
+
+    def _opt_entity(key: str, domain: str):
+        """Return an Optional schema entry with an entity selector.
+        
+        When the user leaves the field empty, the key is simply absent from
+        user_input — we never store None or "" for companion entities.
+        """
+        current = defaults.get(key)
+        if current:
+            return vol.Optional(key, default=current)
+        return vol.Optional(key)
 
     return vol.Schema(
         {
             # ── Sensors ──────────────────────────────────────────────────────
-            vol.Optional(
-                CONF_CURRENT_HUMIDITY_ENTITY,
-                default=defaults.get(CONF_CURRENT_HUMIDITY_ENTITY, ""),
-            ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor")
-            ),
-            vol.Optional(
-                CONF_TANK_LEVEL_ENTITY,
-                default=defaults.get(CONF_TANK_LEVEL_ENTITY, ""),
-            ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor")
-            ),
-            vol.Optional(
-                CONF_PM25_ENTITY,
-                default=defaults.get(CONF_PM25_ENTITY, ""),
-            ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor")
-            ),
-            vol.Optional(
-                CONF_ERROR_ENTITY,
-                default=defaults.get(CONF_ERROR_ENTITY, ""),
-            ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor")
-            ),
+            _opt_entity(CONF_CURRENT_HUMIDITY_ENTITY, "sensor"): _entity_selector("sensor"),
+            _opt_entity(CONF_TANK_LEVEL_ENTITY, "sensor"): _entity_selector("sensor"),
+            _opt_entity(CONF_PM25_ENTITY, "sensor"): _entity_selector("sensor"),
+            _opt_entity(CONF_ERROR_ENTITY, "sensor"): _entity_selector("sensor"),
             # ── Binary sensors ───────────────────────────────────────────────
-            vol.Optional(
-                CONF_BUCKET_FULL_ENTITY,
-                default=defaults.get(CONF_BUCKET_FULL_ENTITY, ""),
-            ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="binary_sensor")
-            ),
-            vol.Optional(
-                CONF_CLEAN_FILTER_ENTITY,
-                default=defaults.get(CONF_CLEAN_FILTER_ENTITY, ""),
-            ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="binary_sensor")
-            ),
-            vol.Optional(
-                CONF_DEFROST_ENTITY,
-                default=defaults.get(CONF_DEFROST_ENTITY, ""),
-            ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="binary_sensor")
-            ),
+            _opt_entity(CONF_BUCKET_FULL_ENTITY, "binary_sensor"): _entity_selector("binary_sensor"),
+            _opt_entity(CONF_CLEAN_FILTER_ENTITY, "binary_sensor"): _entity_selector("binary_sensor"),
+            _opt_entity(CONF_DEFROST_ENTITY, "binary_sensor"): _entity_selector("binary_sensor"),
             # ── Switches ─────────────────────────────────────────────────────
-            vol.Optional(
-                CONF_IONIZER_ENTITY,
-                default=defaults.get(CONF_IONIZER_ENTITY, ""),
-            ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="switch")
-            ),
-            vol.Optional(
-                CONF_PUMP_ENTITY,
-                default=defaults.get(CONF_PUMP_ENTITY, ""),
-            ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="switch")
-            ),
-            vol.Optional(
-                CONF_SLEEP_ENTITY,
-                default=defaults.get(CONF_SLEEP_ENTITY, ""),
-            ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="switch")
-            ),
-            vol.Optional(
-                CONF_BEEP_ENTITY,
-                default=defaults.get(CONF_BEEP_ENTITY, ""),
-            ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="switch")
-            ),
+            _opt_entity(CONF_IONIZER_ENTITY, "switch"): _entity_selector("switch"),
+            _opt_entity(CONF_PUMP_ENTITY, "switch"): _entity_selector("switch"),
+            _opt_entity(CONF_SLEEP_ENTITY, "switch"): _entity_selector("switch"),
+            _opt_entity(CONF_BEEP_ENTITY, "switch"): _entity_selector("switch"),
         }
     )
-
-
-def _clean_data(data: dict) -> dict:
-    """Strip empty strings from form data so they aren't stored as config."""
-    return {k: v for k, v in data.items() if v != "" and v != []}
-
-
-def _parse_modes_text(raw: str) -> list[str]:
-    """Parse a comma-separated modes string entered as free text."""
-    return [m.strip() for m in raw.split(",") if m.strip()]
 
 
 # ─── Config Flow ─────────────────────────────────────────────────────────────
@@ -249,7 +197,7 @@ class HkiEsphomeHumidifierConfigFlow(
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
 
-    # ── Step 1: core ─────────────────────────────────────────────────────────
+    # ── Step 1: choose the climate entity ────────────────────────────────────
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -263,14 +211,8 @@ class HkiEsphomeHumidifierConfigFlow(
             await self.async_set_unique_id(climate_id)
             self._abort_if_unique_id_configured()
 
-            # Validate min < max
-            if user_input.get(CONF_MIN_HUMIDITY, 0) >= user_input.get(
-                CONF_MAX_HUMIDITY, 100
-            ):
-                errors["base"] = "humidity_range_invalid"
-            else:
-                self._data.update(_clean_data(user_input))
-                return await self.async_step_modes()
+            self._data.update(_clean_data(user_input))
+            return await self.async_step_modes()
 
         return self.async_show_form(
             step_id="user",
@@ -278,35 +220,33 @@ class HkiEsphomeHumidifierConfigFlow(
             errors=errors,
         )
 
-    # ── Step 2: modes ────────────────────────────────────────────────────────
+    # ── Step 2: modes (auto-populated from the entity) ───────────────────────
 
     async def async_step_modes(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        errors: dict[str, str] = {}
-
         climate_id = self._data.get(CONF_CLIMATE_ENTITY, "")
-        available_modes = _get_climate_preset_modes(self.hass, climate_id)
+        preset_modes = _get_preset_modes(self.hass, climate_id)
+        hvac_modes = _get_hvac_modes(self.hass, climate_id)
 
         if user_input is not None:
             modes = user_input.get(CONF_MODES, [])
-            # Handle free-text fallback
             if isinstance(modes, str):
                 modes = _parse_modes_text(modes)
             if modes:
                 self._data[CONF_MODES] = modes
+            on_mode = user_input.get(CONF_ON_HVAC_MODE)
+            if on_mode:
+                self._data[CONF_ON_HVAC_MODE] = on_mode
             return await self.async_step_extras()
 
         return self.async_show_form(
             step_id="modes",
-            data_schema=_step_modes_schema(self._data, available_modes),
-            errors=errors,
-            description_placeholders={
-                "climate_entity": climate_id,
-            },
+            data_schema=_step_modes_schema(self._data, preset_modes, hvac_modes),
+            description_placeholders={"climate_entity": climate_id},
         )
 
-    # ── Step 3: extras ───────────────────────────────────────────────────────
+    # ── Step 3: optional companion entities ──────────────────────────────────
 
     async def async_step_extras(
         self, user_input: dict[str, Any] | None = None
@@ -327,7 +267,7 @@ class HkiEsphomeHumidifierConfigFlow(
     @callback
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
-    ) -> HkiEsphomeHumidifierOptionsFlow:
+    ) -> "HkiEsphomeHumidifierOptionsFlow":
         return HkiEsphomeHumidifierOptionsFlow(config_entry)
 
 
@@ -338,7 +278,6 @@ class HkiEsphomeHumidifierOptionsFlow(config_entries.OptionsFlow):
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         self._entry = config_entry
-        # Merge current data + options so defaults reflect the live config
         self._data: dict[str, Any] = {
             **config_entry.data,
             **config_entry.options,
@@ -347,45 +286,40 @@ class HkiEsphomeHumidifierOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        """Options flow starts at the core step."""
         return await self.async_step_core()
 
     async def async_step_core(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
-        errors: dict[str, str] = {}
-
         if user_input is not None:
-            if user_input.get(CONF_MIN_HUMIDITY, 0) >= user_input.get(
-                CONF_MAX_HUMIDITY, 100
-            ):
-                errors["base"] = "humidity_range_invalid"
-            else:
-                self._data.update(_clean_data(user_input))
-                return await self.async_step_modes()
+            self._data.update(_clean_data(user_input))
+            return await self.async_step_modes()
 
         return self.async_show_form(
             step_id="core",
             data_schema=_step_core_schema(self._data),
-            errors=errors,
         )
 
     async def async_step_modes(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.FlowResult:
         climate_id = self._data.get(CONF_CLIMATE_ENTITY, "")
-        available_modes = _get_climate_preset_modes(self.hass, climate_id)
+        preset_modes = _get_preset_modes(self.hass, climate_id)
+        hvac_modes = _get_hvac_modes(self.hass, climate_id)
 
         if user_input is not None:
             modes = user_input.get(CONF_MODES, [])
             if isinstance(modes, str):
                 modes = _parse_modes_text(modes)
             self._data[CONF_MODES] = modes
+            on_mode = user_input.get(CONF_ON_HVAC_MODE)
+            if on_mode:
+                self._data[CONF_ON_HVAC_MODE] = on_mode
             return await self.async_step_extras()
 
         return self.async_show_form(
             step_id="modes",
-            data_schema=_step_modes_schema(self._data, available_modes),
+            data_schema=_step_modes_schema(self._data, preset_modes, hvac_modes),
             description_placeholders={"climate_entity": climate_id},
         )
 
