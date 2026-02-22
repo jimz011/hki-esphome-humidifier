@@ -1,17 +1,15 @@
 """HKI ESPHome Humidifier Converter — humidifier platform.
 
-Translates an ESPHome climate entity (midea_dehum and similar) into a proper
-HA humidifier / dehumidifier entity.
-
-Attribute reading priority from the climate entity
+Attribute mapping (verified against live midea_dehum state)
 ────────────────────────────────────────────────────────────────────────────
-  target_humidity  ← climate.temperature          (the humidity setpoint)
-  humidity range   ← climate.min_temp / max_temp  (auto-read, not stored)
-  current_humidity ← climate.humidity             (primary)
-                   ← climate.current_temperature  (fallback if humidity absent)
-                   ← current_humidity_entity       (overrides both if configured)
+  target_humidity  ← climate.humidity             (the % setpoint)
+  current_humidity ← climate.current_humidity     (measured room humidity)
+                   ← current_humidity_entity       (override if configured)
+  current_temp     ← climate.current_temperature  (exposed as extra attr)
+  humidity range   ← climate.min_humidity / max_humidity
   mode             ← climate.preset_mode
   is_on            ← climate.state != "off"
+  fan_mode         → handled by HkiEsphomeFanModeSelect in select.py
 ────────────────────────────────────────────────────────────────────────────
 """
 
@@ -82,7 +80,6 @@ PLATFORM_SCHEMA = HUMIDIFIER_PLATFORM_SCHEMA.extend(
         vol.Required(CONF_CLIMATE_ENTITY): cv.entity_id,
         vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
         vol.Optional(CONF_ON_HVAC_MODE, default=DEFAULT_ON_HVAC_MODE): cv.string,
-        # min/max can still be overridden via YAML; otherwise auto-read from entity
         vol.Optional(CONF_MIN_HUMIDITY): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
         vol.Optional(CONF_MAX_HUMIDITY): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
         vol.Optional(CONF_MODES, default=[]): vol.All(cv.ensure_list, [cv.string]),
@@ -126,7 +123,6 @@ async def async_setup_entry(
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def _safe_float(value: Any) -> float | None:
-    """Convert to float, return None on failure."""
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -141,12 +137,7 @@ def _safe_int(value: Any) -> int | None:
 # ─── Entity ──────────────────────────────────────────────────────────────────
 
 class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
-    """Humidifier entity wrapping an ESPHome climate entity.
-
-    The climate entity is the single source of truth. All min/max humidity,
-    preset modes and hvac modes are read directly from its live attributes —
-    nothing is hardcoded from config except the entity ID and the name.
-    """
+    """Humidifier entity wrapping an ESPHome climate entity."""
 
     _attr_has_entity_name = False
     _attr_device_class = HumidifierDeviceClass.DEHUMIDIFIER
@@ -160,14 +151,13 @@ class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
         self._attr_name: str = config.get(CONF_NAME, DEFAULT_NAME)
         self._attr_unique_id: str = f"{DOMAIN}_{self._climate_entity_id}"
 
-        # min/max humidity — prefer explicit config (YAML override), otherwise
-        # will be updated live from min_temp / max_temp on the climate entity.
+        # min/max humidity — prefer explicit YAML override, else auto-read from entity
         self._yaml_min: int | None = _safe_int(config.get(CONF_MIN_HUMIDITY))
         self._yaml_max: int | None = _safe_int(config.get(CONF_MAX_HUMIDITY))
         self._attr_min_humidity: int = self._yaml_min or DEFAULT_MIN_HUMIDITY
         self._attr_max_humidity: int = self._yaml_max or DEFAULT_MAX_HUMIDITY
 
-        # Modes from config (may be empty → auto-populated from entity later)
+        # Modes
         modes: list[str] = config.get(CONF_MODES) or []
         self._configured_modes: list[str] = modes
         if modes:
@@ -177,7 +167,7 @@ class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
             self._attr_available_modes = None
             self._attr_supported_features = HumidifierEntityFeature(0)
 
-        # Companion entity IDs — None when not configured
+        # Companion entity IDs
         self._companion: dict[str, str | None] = {
             key: config.get(key) or None for key in ALL_COMPANION_KEYS
         }
@@ -188,6 +178,7 @@ class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
         self._attr_current_humidity: float | None = None
         self._attr_mode: str | None = None
         self._attr_available: bool = False
+        self._current_temperature: float | None = None
         self._companion_values: dict[str, Any] = {}
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
@@ -247,8 +238,7 @@ class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
         # on/off
         self._attr_is_on = state.state != STATE_OFF
 
-        # ── Humidity setpoint range — read from min_humidity / max_humidity ──
-        # Only override if the user did not provide explicit YAML values
+        # ── Humidity range ← min_humidity / max_humidity ─────────────────────
         if self._yaml_min is None:
             v = _safe_int(attrs.get("min_humidity"))
             if v is not None:
@@ -258,38 +248,31 @@ class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
             if v is not None:
                 self._attr_max_humidity = v
 
-        # ── Target humidity ← climate.temperature ────────────────────────────
-        v = _safe_int(attrs.get("temperature"))
+        # ── Target humidity ← climate.humidity ───────────────────────────────
+        # midea_dehum stores the humidity setpoint in the `humidity` attribute.
+        # `temperature` is null on dehumidifiers and must not be used.
+        v = _safe_int(attrs.get("humidity"))
         if v is not None:
             self._attr_target_humidity = v
 
-        # ── Current humidity — only when no dedicated sensor is configured ───
-        # Priority: climate.humidity → climate.current_temperature
+        # ── Current humidity ← climate.current_humidity ──────────────────────
+        # Only use the climate entity when no dedicated sensor is configured.
+        # Note: `humidity` = target setpoint, `current_humidity` = measured value.
         if not self._companion.get(CONF_CURRENT_HUMIDITY_ENTITY):
-            # Primary: the `humidity` attribute (midea_dehum reports room
-            # humidity here)
-            humidity_val = attrs.get("humidity")
-            if humidity_val is not None:
-                v = _safe_float(humidity_val)
-                if v is not None:
-                    self._attr_current_humidity = v
-            else:
-                # Fallback: current_temperature (some other ESPHome components
-                # use this for the room humidity reading)
-                cur_temp = attrs.get("current_temperature")
-                if cur_temp is not None:
-                    v = _safe_float(cur_temp)
-                    if v is not None:
-                        self._attr_current_humidity = v
+            v = _safe_float(attrs.get("current_humidity"))
+            if v is not None:
+                self._attr_current_humidity = v
+
+        # ── Current temperature ← climate.current_temperature ────────────────
+        # Not a standard humidifier field — exposed as an extra state attribute
+        # so automations and custom cards can use it.
+        self._current_temperature = _safe_float(attrs.get("current_temperature"))
 
         # ── Mode ← preset_mode ───────────────────────────────────────────────
-        # Also auto-discover available modes from the entity if none were
-        # configured explicitly.
         preset = attrs.get("preset_mode")
         entity_presets: list[str] = attrs.get("preset_modes") or []
 
         if not self._configured_modes and entity_presets:
-            # No modes configured at setup time — use what the entity reports
             self._attr_available_modes = entity_presets
             self._attr_supported_features = HumidifierEntityFeature.MODES
 
@@ -307,7 +290,6 @@ class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
                 self._sync_companion(entity_id, state)
 
     def _sync_companion(self, entity_id: str, state) -> None:
-        """Update the cached value for one companion entity."""
         if state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE):
             return
 
@@ -319,24 +301,19 @@ class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
                 continue
 
             if conf_key == CONF_CURRENT_HUMIDITY_ENTITY:
-                # Dedicated humidity sensor → update current_humidity directly
                 v = _safe_float(state.state)
                 if v is not None:
                     self._attr_current_humidity = v
                 else:
                     _LOGGER.warning(
-                        "HKI Humidifier: could not parse humidity sensor value '%s'",
+                        "HKI Humidifier: could not parse humidity sensor '%s'",
                         state.state,
                     )
-
             elif conf_key in COMPANION_BINARY_SENSOR_KEYS:
                 self._companion_values[attr_name] = state.state == STATE_ON
-
             elif conf_key in COMPANION_SENSOR_KEYS:
                 v = _safe_float(state.state)
-                # Keep as float if parseable, else keep raw string (error codes)
                 self._companion_values[attr_name] = v if v is not None else state.state
-
             elif conf_key in COMPANION_SWITCH_KEYS:
                 self._companion_values[attr_name] = state.state == STATE_ON
 
@@ -361,10 +338,11 @@ class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
         )
 
     async def async_set_humidity(self, humidity: int) -> None:
+        """Set the target humidity — forwarded as climate.set_humidity."""
         _LOGGER.debug("HKI [%s]: set_humidity(%d)", self._climate_entity_id, humidity)
         await self.hass.services.async_call(
-            "climate", "set_temperature",
-            {ATTR_ENTITY_ID: self._climate_entity_id, "temperature": humidity},
+            "climate", "set_humidity",
+            {ATTR_ENTITY_ID: self._climate_entity_id, "humidity": humidity},
             blocking=True,
         )
 
@@ -389,5 +367,7 @@ class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
             "source_climate_entity": self._climate_entity_id,
             "on_hvac_mode": self._on_hvac_mode,
         }
+        if self._current_temperature is not None:
+            attrs["current_temperature"] = self._current_temperature
         attrs.update(self._companion_values)
         return attrs
