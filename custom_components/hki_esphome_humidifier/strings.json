@@ -1,0 +1,116 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "HKI ESPHome Humidifier Converter",
+        "description": "Step 1 of 3 — Link your ESPHome climate entity and configure basic settings.",
+        "data": {
+          "climate_entity": "ESPHome climate entity",
+          "name": "Friendly name",
+          "on_hvac_mode": "HVAC mode used when turning on",
+          "min_humidity": "Minimum target humidity (%)",
+          "max_humidity": "Maximum target humidity (%)"
+        },
+        "data_description": {
+          "climate_entity": "The climate entity created by your ESPHome midea_dehum (or similar) component.",
+          "on_hvac_mode": "The HVAC mode that will be activated on the climate entity when you turn the dehumidifier on. For midea_dehum this is usually 'dry'.",
+          "min_humidity": "Lowest humidity setpoint the slider will allow.",
+          "max_humidity": "Highest humidity setpoint the slider will allow."
+        }
+      },
+      "modes": {
+        "title": "Operating Modes",
+        "description": "Step 2 of 3 — Select which preset modes to expose. These are read from the climate entity '{climate_entity}'. Deselect any modes your device does not support.",
+        "data": {
+          "modes": "Supported operating modes"
+        },
+        "data_description": {
+          "modes": "Only modes selected here will appear in the humidifier mode picker. Leave all deselected to disable mode support entirely."
+        }
+      },
+      "extras": {
+        "title": "Optional Companion Entities",
+        "description": "Step 3 of 3 — Link the additional entities created by ESPHome for this device. All fields are optional — only fill in the ones that exist for your device.",
+        "data": {
+          "current_humidity_entity": "Current humidity sensor",
+          "tank_level_entity": "Tank water level sensor",
+          "pm25_entity": "PM2.5 sensor",
+          "error_entity": "Error code sensor",
+          "bucket_full_entity": "Bucket full binary sensor",
+          "clean_filter_entity": "Clean filter binary sensor",
+          "defrost_entity": "Defrosting binary sensor",
+          "ionizer_entity": "Ionizer switch",
+          "pump_entity": "Pump switch",
+          "sleep_entity": "Sleep mode switch",
+          "beep_entity": "Beep on command switch"
+        },
+        "data_description": {
+          "current_humidity_entity": "When set, this sensor is used for current humidity instead of the climate entity's current_temperature attribute.",
+          "tank_level_entity": "Reports the current tank water level (if your device supports it).",
+          "pm25_entity": "PM2.5 air quality sensor (if your device supports it).",
+          "error_entity": "Error code sensor for diagnostics.",
+          "bucket_full_entity": "Binary sensor that turns on when the water tank is full.",
+          "clean_filter_entity": "Binary sensor that turns on when filter cleaning is required.",
+          "defrost_entity": "Binary sensor that turns on when the defrost cycle is running.",
+          "ionizer_entity": "Switch to control the ionizer (if your device has one).",
+          "pump_entity": "Switch to control the pump (if your device supports it).",
+          "sleep_entity": "Switch to enable/disable sleep mode (if your device supports it).",
+          "beep_entity": "Switch to control whether the device beeps on command."
+        }
+      }
+    },
+    "error": {
+      "humidity_range_invalid": "Minimum humidity must be less than maximum humidity."
+    },
+    "abort": {
+      "already_configured": "This climate entity is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "core": {
+        "title": "Core Settings",
+        "description": "Update the basic settings for this dehumidifier.",
+        "data": {
+          "climate_entity": "ESPHome climate entity",
+          "name": "Friendly name",
+          "on_hvac_mode": "HVAC mode used when turning on",
+          "min_humidity": "Minimum target humidity (%)",
+          "max_humidity": "Maximum target humidity (%)"
+        },
+        "data_description": {
+          "on_hvac_mode": "The HVAC mode that will be activated on the climate entity when you turn the dehumidifier on.",
+          "min_humidity": "Lowest humidity setpoint the slider will allow.",
+          "max_humidity": "Highest humidity setpoint the slider will allow."
+        }
+      },
+      "modes": {
+        "title": "Operating Modes",
+        "description": "Select which preset modes to expose for '{climate_entity}'.",
+        "data": {
+          "modes": "Supported operating modes"
+        }
+      },
+      "extras": {
+        "title": "Optional Companion Entities",
+        "description": "Update the optional companion entity links for this device.",
+        "data": {
+          "current_humidity_entity": "Current humidity sensor",
+          "tank_level_entity": "Tank water level sensor",
+          "pm25_entity": "PM2.5 sensor",
+          "error_entity": "Error code sensor",
+          "bucket_full_entity": "Bucket full binary sensor",
+          "clean_filter_entity": "Clean filter binary sensor",
+          "defrost_entity": "Defrosting binary sensor",
+          "ionizer_entity": "Ionizer switch",
+          "pump_entity": "Pump switch",
+          "sleep_entity": "Sleep mode switch",
+          "beep_entity": "Beep on command switch"
+        }
+      }
+    },
+    "error": {
+      "humidity_range_invalid": "Minimum humidity must be less than maximum humidity."
+    }
+  }
+}
