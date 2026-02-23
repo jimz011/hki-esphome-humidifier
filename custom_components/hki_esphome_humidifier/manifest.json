@@ -1,7 +1,7 @@
 {
   "domain": "hki_esphome_humidifier",
   "name": "HKI ESPHome Humidifier Converter",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "documentation": "https://github.com/jimz011/hki-esphome-humidifier/",
   "issue_tracker": "https://github.com/jimz011/hki-esphome-humidifier/issues",
   "codeowners": ["@jimz011"],
