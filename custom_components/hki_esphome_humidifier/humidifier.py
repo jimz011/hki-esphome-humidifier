@@ -175,6 +175,8 @@ class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
         # Runtime state
         self._attr_is_on: bool = False
         self._attr_target_humidity: int | None = None
+        self._target_humidity_low: int | None = None
+        self._target_humidity_high: int | None = None
         self._attr_current_humidity: float | None = None
         self._attr_mode: str | None = None
         self._attr_available: bool = False
@@ -254,6 +256,14 @@ class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
         v = _safe_int(attrs.get("humidity"))
         if v is not None:
             self._attr_target_humidity = v
+
+        # ── Target humidity range ← climate.target_temperature_low/high ──────
+        # ESPHome midea dehumidifier maps humidity range setpoints to the
+        # climate target_temperature_low / target_temperature_high fields.
+        vlo = _safe_int(attrs.get("target_temperature_low"))
+        vhi = _safe_int(attrs.get("target_temperature_high"))
+        self._target_humidity_low = vlo
+        self._target_humidity_high = vhi
 
         # ── Current humidity ← climate.current_humidity ──────────────────────
         # Only use the climate entity when no dedicated sensor is configured.
@@ -337,14 +347,35 @@ class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
             blocking=True,
         )
 
-    async def async_set_humidity(self, humidity: int) -> None:
-        """Set the target humidity — forwarded as climate.set_humidity."""
-        _LOGGER.debug("HKI [%s]: set_humidity(%d)", self._climate_entity_id, humidity)
-        await self.hass.services.async_call(
-            "climate", "set_humidity",
-            {ATTR_ENTITY_ID: self._climate_entity_id, "humidity": humidity},
-            blocking=True,
-        )
+    async def async_set_humidity(self, humidity: int, **kwargs: Any) -> None:
+        """Set the target humidity — forwarded as climate.set_humidity.
+        
+        Supports optional humidity_low / humidity_high keyword arguments for
+        range-mode dehumidifiers (ESPHome midea_dehum with auto/heat_cool mode).
+        """
+        humidity_low = kwargs.get("humidity_low")
+        humidity_high = kwargs.get("humidity_high")
+        if humidity_low is not None and humidity_high is not None:
+            _LOGGER.debug(
+                "HKI [%s]: set_humidity range(%d-%d)",
+                self._climate_entity_id, humidity_low, humidity_high,
+            )
+            await self.hass.services.async_call(
+                "climate", "set_temperature",
+                {
+                    ATTR_ENTITY_ID: self._climate_entity_id,
+                    "target_temp_low": humidity_low,
+                    "target_temp_high": humidity_high,
+                },
+                blocking=True,
+            )
+        else:
+            _LOGGER.debug("HKI [%s]: set_humidity(%d)", self._climate_entity_id, humidity)
+            await self.hass.services.async_call(
+                "climate", "set_humidity",
+                {ATTR_ENTITY_ID: self._climate_entity_id, "humidity": humidity},
+                blocking=True,
+            )
 
     async def async_set_mode(self, mode: str) -> None:
         if self._attr_available_modes and mode not in self._attr_available_modes:
@@ -369,5 +400,9 @@ class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
         }
         if self._current_temperature is not None:
             attrs["current_temperature"] = self._current_temperature
+        if self._target_humidity_low is not None:
+            attrs["target_humidity_low"] = self._target_humidity_low
+        if self._target_humidity_high is not None:
+            attrs["target_humidity_high"] = self._target_humidity_high
         attrs.update(self._companion_values)
         return attrs
