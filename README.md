@@ -11,6 +11,13 @@ This component is created to be used when you have a Midea/Comfee dehumidifier a
 
 ESPHome doesn't have humidifier support, so for the time being I have made this component. The above ESPHome component will expose your dehumidifier as a climate entity. This component will convert it so it is exposed in the humidifier domain. A separate fan speed entity will also be created as the humidifier domain does not support that.
 
+When a separate current-humidity sensor is configured, target humidity is
+automatically compensated for the difference between that room sensor and the
+dehumidifier's internal sensor. For example, if the room sensor reads 60%, the
+device reads 65%, and the requested room target is 50%, the underlying device
+target is set to 55%. The adjusted target is limited to the device's supported
+humidity range.
+
 ## Documentation
 For documentation **[CLICK HERE](https://jimz011.github.io/hki-elements/components/hki-esphome-humidifier/overview/)**
 

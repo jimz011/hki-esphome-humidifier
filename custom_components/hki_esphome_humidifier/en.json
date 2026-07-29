@@ -42,7 +42,7 @@
           "beep_entity": "Beep on command switch"
         },
         "data_description": {
-          "current_humidity_entity": "Only needed if you want to use a separate humidity sensor instead of the value from the climate entity.",
+          "current_humidity_entity": "Uses this room sensor for current humidity and compensates the device target for the difference from its internal sensor.",
           "tank_level_entity": "Reports the current tank water level (if your device supports it).",
           "pm25_entity": "PM2.5 air quality sensor (if your device supports it).",
           "error_entity": "Error code sensor for diagnostics.",
