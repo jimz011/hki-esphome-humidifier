@@ -134,6 +134,18 @@ def _safe_int(value: Any) -> int | None:
     return int(f) if f is not None else None
 
 
+def _compensated_humidity_target(
+    requested: float,
+    device_current: float,
+    room_current: float,
+    minimum: int,
+    maximum: int,
+) -> int:
+    """Translate a room target to the equivalent device-sensor target."""
+    adjusted = round(device_current + requested - room_current)
+    return max(minimum, min(maximum, adjusted))
+
+
 # ─── Entity ──────────────────────────────────────────────────────────────────
 
 class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
@@ -175,6 +187,8 @@ class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
         # Runtime state
         self._attr_is_on: bool = False
         self._attr_target_humidity: int | None = None
+        self._requested_target_humidity: int | None = None
+        self._device_target_humidity: int | None = None
         self._target_humidity_low: int | None = None
         self._target_humidity_high: int | None = None
         self._attr_current_humidity: float | None = None
@@ -205,6 +219,9 @@ class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
         last_state = await self.async_get_last_state()
         if last_state and last_state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
             self._attr_is_on = last_state.state != STATE_OFF
+            self._requested_target_humidity = _safe_int(
+                last_state.attributes.get("humidity")
+            )
 
         self._sync_from_climate()
         self._sync_all_companions()
@@ -255,7 +272,12 @@ class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
         # `temperature` is null on dehumidifiers and must not be used.
         v = _safe_int(attrs.get("humidity"))
         if v is not None:
-            self._attr_target_humidity = v
+            self._device_target_humidity = v
+            if (
+                not self._companion.get(CONF_CURRENT_HUMIDITY_ENTITY)
+                or self._requested_target_humidity is None
+            ):
+                self._attr_target_humidity = v
 
         # ── Target humidity range ← climate.target_temperature_low/high ──────
         # ESPHome midea dehumidifier maps humidity range setpoints to the
@@ -348,7 +370,7 @@ class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
         )
 
     async def async_set_humidity(self, humidity: int, **kwargs: Any) -> None:
-        """Set the target humidity — forwarded as climate.set_humidity.
+        """Set the target humidity, compensating for an external room sensor.
         
         Supports optional humidity_low / humidity_high keyword arguments for
         range-mode dehumidifiers (ESPHome midea_dehum with auto/heat_cool mode).
@@ -356,26 +378,89 @@ class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
         humidity_low = kwargs.get("humidity_low")
         humidity_high = kwargs.get("humidity_high")
         if humidity_low is not None and humidity_high is not None:
+            device_low = self._device_target_for_room_target(humidity_low)
+            device_high = self._device_target_for_room_target(humidity_high)
             _LOGGER.debug(
-                "HKI [%s]: set_humidity range(%d-%d)",
-                self._climate_entity_id, humidity_low, humidity_high,
+                "HKI [%s]: set_humidity range(%d-%d) -> device range(%d-%d)",
+                self._climate_entity_id,
+                humidity_low,
+                humidity_high,
+                device_low,
+                device_high,
             )
             await self.hass.services.async_call(
                 "climate", "set_temperature",
                 {
                     ATTR_ENTITY_ID: self._climate_entity_id,
-                    "target_temp_low": humidity_low,
-                    "target_temp_high": humidity_high,
+                    "target_temp_low": device_low,
+                    "target_temp_high": device_high,
                 },
                 blocking=True,
             )
+            self._target_humidity_low = humidity_low
+            self._target_humidity_high = humidity_high
         else:
-            _LOGGER.debug("HKI [%s]: set_humidity(%d)", self._climate_entity_id, humidity)
+            device_target = self._device_target_for_room_target(humidity)
+            _LOGGER.debug(
+                "HKI [%s]: set_humidity(%d) -> device target(%d)",
+                self._climate_entity_id,
+                humidity,
+                device_target,
+            )
             await self.hass.services.async_call(
                 "climate", "set_humidity",
-                {ATTR_ENTITY_ID: self._climate_entity_id, "humidity": humidity},
+                {
+                    ATTR_ENTITY_ID: self._climate_entity_id,
+                    "humidity": device_target,
+                },
                 blocking=True,
             )
+            self._requested_target_humidity = humidity
+            self._attr_target_humidity = humidity
+            self._device_target_humidity = device_target
+            self.async_write_ha_state()
+
+    def _device_target_for_room_target(self, requested: int) -> int:
+        """Return a compensated device target when both sensors are available."""
+        sensor_entity_id = self._companion.get(CONF_CURRENT_HUMIDITY_ENTITY)
+        if not sensor_entity_id:
+            return requested
+
+        climate_state = self.hass.states.get(self._climate_entity_id)
+        room_state = self.hass.states.get(sensor_entity_id)
+        if (
+            climate_state is None
+            or room_state is None
+            or climate_state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE)
+            or room_state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE)
+        ):
+            _LOGGER.warning(
+                "HKI [%s]: humidity compensation unavailable; using target %d",
+                self._climate_entity_id,
+                requested,
+            )
+            return requested
+
+        device_current = _safe_float(
+            climate_state.attributes.get("current_humidity")
+        )
+        room_current = _safe_float(room_state.state)
+        if device_current is None or room_current is None:
+            _LOGGER.warning(
+                "HKI [%s]: humidity compensation needs valid device and room "
+                "humidity readings; using target %d",
+                self._climate_entity_id,
+                requested,
+            )
+            return requested
+
+        return _compensated_humidity_target(
+            requested,
+            device_current,
+            room_current,
+            self._attr_min_humidity,
+            self._attr_max_humidity,
+        )
 
     async def async_set_mode(self, mode: str) -> None:
         if self._attr_available_modes and mode not in self._attr_available_modes:
@@ -400,6 +485,8 @@ class HkiEsphomeHumidifier(HumidifierEntity, RestoreEntity):
         }
         if self._current_temperature is not None:
             attrs["current_temperature"] = self._current_temperature
+        if self._device_target_humidity is not None:
+            attrs["device_target_humidity"] = self._device_target_humidity
         if self._target_humidity_low is not None:
             attrs["target_humidity_low"] = self._target_humidity_low
         if self._target_humidity_high is not None:
